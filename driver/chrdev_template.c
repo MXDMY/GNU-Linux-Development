@@ -4,6 +4,8 @@
 #include <linux/kdev_t.h>
 #include <linux/cdev.h>
 #include <linux/uaccess.h> // copy_to_user copy_from_user
+#include <linux/spinlock.h>
+#include <linux/wait.h>
 
 // 驱动模块传参，insmod 命令操作时赋值可覆盖代码中的值，可在 /sys/module/<驱动文件名>/parameters/ 下查看
 /*static int number = 123;
@@ -41,6 +43,19 @@ struct device_ext
     char* device_name;     // 设备节点名，在 /dev/ 和 /sys/class/<类名> 目录下
 
     int alloc_step;        // 指示该设备的资源申请到了那一步，出错释放资源时使用，申请资源前务必先初始化为 0 值
+
+/*
+  该模板使用如下设备读写顺序机制：
+  1、写独占；读允许其它线程读，但不允许写
+  2、写完成，优先唤醒全部读，无读则唤醒一个写
+  3、读完成，若仍有线程在读，则无操作，否则唤醒写
+  读写顺序依赖的设备成员如下：
+*/
+    char is_free;                 // 空闲标志
+    spinlock_t spinlock;          // 自旋锁
+    wait_queue_head_t waithead;   // 写-等待队列头
+    int reading_count;            // 在读线程数量
+    wait_queue_head_t r_waithead; // 读-等待队列头
 };
 
 static char* const chrdev_name = "chrdev_name"; // 设备名（只与主设备号关联，唯一），可在 /proc/devices 文件中查看
@@ -48,14 +63,12 @@ static const uint baseminor = 0; // 次设备号最小值
 
 #define DEVICE_EXT_COUNT 2
 static struct device_ext dev[DEVICE_EXT_COUNT] = {
-    {.class_name = "class1_name" , .device_name = "device1_name" , .alloc_step = 0},
-    {.class_name = "class2_name" , .device_name = "device2_name" , .alloc_step = 0}
+    {.class_name = "class1_name" , .device_name = "device1_name"},
+    {.class_name = "class2_name" , .device_name = "device2_name"}
 };
 
 static int chrdev_open(struct inode* inode , struct file* file)
 {
-    printk("chrdev_open is called.\n");
-
     file->private_data = container_of(inode->i_cdev , struct device_ext , cdev);
 
     return 0;
@@ -63,19 +76,87 @@ static int chrdev_open(struct inode* inode , struct file* file)
 
 static ssize_t chrdev_read(struct file* file , char __user* buf , size_t size , loff_t* off)
 {
-    printk("chrdev_read is called.\n");
+    struct device_ext* dev = (struct device_ext*)file->private_data;
+    unsigned long irqflags;
+
+CHRDEV_READ_START:
+    spin_lock_irqsave(&dev->spinlock , irqflags);
+    if(! dev->is_free)
+    {
+        if(dev->reading_count <= 0) // 设备忙碌且无读线程，写在独占
+        {
+            spin_unlock_irqrestore(&dev->spinlock , irqflags);
+            // 睡眠中断返回 ERESTARTSYS，暂未处理
+            wait_event_interruptible_timeout(dev->r_waithead , dev->is_free , 5 * HZ);
+            goto CHRDEV_READ_START;
+        }
+        else
+        {
+            dev->reading_count++;
+            spin_unlock_irqrestore(&dev->spinlock , irqflags);
+        }
+    }
+    else
+    {
+        dev->is_free = 0;
+        dev->reading_count++;
+        spin_unlock_irqrestore(&dev->spinlock , irqflags);
+    }
+
+    /* TODO */
+    //TEST
+    copy_to_user(buf , dev->kbuf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
+    /**/
+
+    spin_lock_irqsave(&dev->spinlock , irqflags);
+    dev->reading_count--;
+    if(dev->reading_count <= 0)
+    {
+        dev->is_free = 1;
+        spin_unlock_irqrestore(&dev->spinlock , irqflags);
+        if(waitqueue_active(&dev->waithead))
+            wake_up_interruptible(&dev->waithead);
+    }
+    else
+        spin_unlock_irqrestore(&dev->spinlock , irqflags);
     return size;
 }
 
 static ssize_t chrdev_write(struct file* file , const char __user* buf , size_t size , loff_t* off)
 {
-    printk("chrdev_write is called.\n");
+    struct device_ext* dev = (struct device_ext*)file->private_data;
+    unsigned long irqflags;
+
+CHRDEV_WRITE_START:
+    spin_lock_irqsave(&dev->spinlock , irqflags);
+    if(! dev->is_free)
+    {
+        spin_unlock_irqrestore(&dev->spinlock , irqflags);
+        wait_event_interruptible_timeout(dev->waithead , dev->is_free , 5 * HZ); // 睡眠中断返回 ERESTARTSYS，暂未处理
+        goto CHRDEV_WRITE_START;
+    }
+    else
+    {
+        dev->is_free = 0;
+        spin_unlock_irqrestore(&dev->spinlock , irqflags);
+    }
+    
+    /* TODO */
+    // TEST
+    copy_from_user(dev->kbuf , buf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
+    printk("write [%s] to <%s>.\n" , dev->kbuf , dev->device_name);
+    /**/
+
+    dev->is_free = 1;
+    if(waitqueue_active(&dev->r_waithead))
+        wake_up_interruptible_all(&dev->r_waithead);
+    else
+        wake_up_interruptible(&dev->waithead);
     return size;
 }
 
 static int chrdev_release(struct inode* inode , struct file* file)
 {
-    printk("chrdev_release is called.\n");
     return 0;
 }
 
@@ -105,13 +186,23 @@ static int __init chrdev_init(void) // 驱动入口函数
     int i = 0;
     for(i = 0 ; i < DEVICE_EXT_COUNT ; i++)
     {
+        dev[i].alloc_step = 0;
+
+        dev[i].is_free = 1;
+        spin_lock_init(&dev[i].spinlock);
+        init_waitqueue_head(&dev[i].waithead);
+        dev[i].reading_count = 0;
+        init_waitqueue_head(&dev[i].r_waithead);
+
         dev[i].major = major;
         dev[i].minor = minor + i;
         dev[i].dev_num = MKDEV(major , dev[i].minor);
         cdev_init(&dev[i].cdev , &cdev_fops); // 初始化 cdev 结构体，并链接到 cdev_fops 结构体
         dev[i].cdev.owner = THIS_MODULE; // 将 owner 字段指向本模块，避免模块中的相关操作正在被使用时卸载该模块
-
-        ret = cdev_add(&dev[i].cdev , dev[i].dev_num , 1); // 进行设备号与 cdev 的关联
+        
+        // 进行设备号与 cdev 的关联，每次关联一个。在 struct device_ext 中，cdev 与 dev_num 是一对一的，这样做，
+        // 有利于 chrdev_open 部分通过 container_of 与 cdev 快速定位具体设备，而不需要通过 inode->i_rdev 挨个找
+        ret = cdev_add(&dev[i].cdev , dev[i].dev_num , 1);
         if(ret < 0)
         {
             goto CHRDEV_INIT_FAILED;

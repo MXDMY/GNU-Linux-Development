@@ -1,7 +1,7 @@
 # export ARCH = arm64
 # export CROSS_COMPILE = aarch64-none-linux-gnu
 obj-m += chrdev_template.o miscdev_template.o
-KDIR := /home/a/Downloads/linux-5.10
+KDIR := /usr/src/linux-headers-5.10.0-30-amd64
 PWD ?= $(shell pwd)
 all:
 	make -C $(KDIR) M=$(PWD) modules
