@@ -27,6 +27,12 @@ int add(int a, int b)
 }
 EXPORT_SYMBOL(add);*/
 
+#if 1
+#define CHRDEV_TEMP_DEBUG(str) printk(KERN_DEBUG "%d:%s\n" , current->pid , str)
+#else
+#define CHRDEV_TEMP_DEBUG(str) 
+#endif
+
 struct device_ext
 {
     dev_t dev_num;         // 设备号
@@ -80,12 +86,14 @@ static ssize_t chrdev_read(struct file* file , char __user* buf , size_t size , 
     unsigned long irqflags;
 
 CHRDEV_READ_START:
+    CHRDEV_TEMP_DEBUG("r trylock");
     spin_lock_irqsave(&dev->spinlock , irqflags);
     if(! dev->is_free)
     {
         if(dev->reading_count <= 0) // 设备忙碌且无读线程，写在独占
         {
             spin_unlock_irqrestore(&dev->spinlock , irqflags);
+            CHRDEV_TEMP_DEBUG("r wait");
             // 睡眠中断返回 ERESTARTSYS，暂未处理
             wait_event_interruptible_timeout(dev->r_waithead , dev->is_free , 5 * HZ);
             goto CHRDEV_READ_START;
@@ -102,11 +110,11 @@ CHRDEV_READ_START:
         dev->reading_count++;
         spin_unlock_irqrestore(&dev->spinlock , irqflags);
     }
+    CHRDEV_TEMP_DEBUG("r...");
 
     /* TODO */
-    //TEST
     copy_to_user(buf , dev->kbuf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
-    /**/
+    /********/
 
     spin_lock_irqsave(&dev->spinlock , irqflags);
     dev->reading_count--;
@@ -115,10 +123,16 @@ CHRDEV_READ_START:
         dev->is_free = 1;
         spin_unlock_irqrestore(&dev->spinlock , irqflags);
         if(waitqueue_active(&dev->waithead))
+        {
+            CHRDEV_TEMP_DEBUG("wake w");
             wake_up_interruptible(&dev->waithead);
+        }
     }
     else
-        spin_unlock_irqrestore(&dev->spinlock , irqflags);
+    {
+        spin_unlock_irqrestore(&dev->spinlock , irqflags); 
+    }
+    CHRDEV_TEMP_DEBUG("r end");
     return size;
 }
 
@@ -128,10 +142,12 @@ static ssize_t chrdev_write(struct file* file , const char __user* buf , size_t 
     unsigned long irqflags;
 
 CHRDEV_WRITE_START:
+    CHRDEV_TEMP_DEBUG("w trylock");
     spin_lock_irqsave(&dev->spinlock , irqflags);
     if(! dev->is_free)
     {
         spin_unlock_irqrestore(&dev->spinlock , irqflags);
+        CHRDEV_TEMP_DEBUG("w wait");
         wait_event_interruptible_timeout(dev->waithead , dev->is_free , 5 * HZ); // 睡眠中断返回 ERESTARTSYS，暂未处理
         goto CHRDEV_WRITE_START;
     }
@@ -139,19 +155,25 @@ CHRDEV_WRITE_START:
     {
         dev->is_free = 0;
         spin_unlock_irqrestore(&dev->spinlock , irqflags);
+        CHRDEV_TEMP_DEBUG("w...");
     }
     
     /* TODO */
-    // TEST
     copy_from_user(dev->kbuf , buf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
-    printk("write [%s] to <%s>.\n" , dev->kbuf , dev->device_name);
-    /**/
+    /********/
 
     dev->is_free = 1;
     if(waitqueue_active(&dev->r_waithead))
+    {
+        CHRDEV_TEMP_DEBUG("wake all r");
         wake_up_interruptible_all(&dev->r_waithead);
-    else
+    }
+    else if(waitqueue_active(&dev->waithead))
+    {
+        CHRDEV_TEMP_DEBUG("wake other w");
         wake_up_interruptible(&dev->waithead);
+    }
+    CHRDEV_TEMP_DEBUG("w end");
     return size;
 }
 
@@ -170,18 +192,18 @@ static struct file_operations cdev_fops = {
 
 static int __init chrdev_init(void) // 驱动入口函数
 {
-    printk("chrdev_template init.\n");
+    printk(KERN_INFO "chrdev_template init...\n");
 
     dev_t dev_num;
     int ret = alloc_chrdev_region(&dev_num , baseminor , DEVICE_EXT_COUNT , chrdev_name); // 自动申请设备号
     if(ret < 0)
     {
-        return ret;
+        goto CHRDEV_INIT_ALLOC_DEV_NUM_FAILED;
     }
     uint major , minor;
     major = MAJOR(dev_num); // 获取申请的主设备号
     minor = MINOR(dev_num); // 获取申请的次设备号起点
-    printk("major is %u.\nminor start is %u.\n" , major , minor);
+    printk(KERN_INFO "major is %u.\nminor start is %u.\n" , major , minor);
 
     int i = 0;
     for(i = 0 ; i < DEVICE_EXT_COUNT ; i++)
@@ -227,6 +249,7 @@ static int __init chrdev_init(void) // 驱动入口函数
         dev[i].alloc_step++;
     }
 
+    printk(KERN_INFO "chrdev_template init ok.\n");
     return 0;
 
 CHRDEV_INIT_FAILED:
@@ -245,6 +268,8 @@ CHRDEV_INIT_FAILED:
             break;
         }
     }
+CHRDEV_INIT_ALLOC_DEV_NUM_FAILED:
+    printk(KERN_CRIT "chrdev_template init failed.\n");
     return ret;
 }
 
@@ -259,7 +284,7 @@ static void __exit chrdev_exit(void) // 驱动出口函数
         unregister_chrdev_region(dev[i].dev_num , 1); // 释放字符设备所申请的设备号
     }
 
-    printk("chrdev_template exit.\n");
+    printk(KERN_INFO "chrdev_template exit.\n");
 }
 
 module_init(chrdev_init); // 注册入口函数
