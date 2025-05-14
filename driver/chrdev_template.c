@@ -6,6 +6,7 @@
 #include <linux/uaccess.h> // copy_to_user copy_from_user
 #include <linux/spinlock.h>
 #include <linux/wait.h>
+#include <linux/poll.h>
 
 // 驱动模块传参，insmod 命令操作时赋值可覆盖代码中的值，可在 /sys/module/<驱动文件名>/parameters/ 下查看
 /*static int number = 123;
@@ -28,10 +29,14 @@ int add(int a, int b)
 EXPORT_SYMBOL(add);*/
 
 #if 1
-#define CHRDEV_TEMP_DEBUG(str) printk(KERN_DEBUG "%d:%s\n" , current->pid , str)
+#define CHRDEV_TEMP_DEBUG(dev_num , str) printk(KERN_DEBUG "P%d:N%u:%s\n" , current->pid , dev_num , str)
 #else
 #define CHRDEV_TEMP_DEBUG(str) 
 #endif
+
+#define DEVICE_EXT_RW_WAITTIME 5 // 设备读写等待队列的超时时长，单位秒
+#define DEVICE_EXT_KBUF_SIZE 32  // 设备缓冲区大小
+#define DEVICE_EXT_COUNT 2       // 设备数量
 
 struct device_ext
 {
@@ -41,13 +46,10 @@ struct device_ext
     struct cdev cdev;      // 要注册的字符设备
     struct class* class;   // 类
     struct device* device; // 设备
-
-#define DEVICE_EXT_KBUF_SIZE 32
-    char kbuf[DEVICE_EXT_KBUF_SIZE]; // 缓存区
-
     char* class_name;      // 类名，在 /sys/class/ 目录下
     char* device_name;     // 设备节点名，在 /dev/ 和 /sys/class/<类名> 目录下
 
+    char kbuf[DEVICE_EXT_KBUF_SIZE]; // 缓存区
     int alloc_step;        // 指示该设备的资源申请到了那一步，出错释放资源时使用，申请资源前务必先初始化为 0 值
 
 /*
@@ -67,7 +69,6 @@ struct device_ext
 static char* const chrdev_name = "chrdev_name"; // 设备名（只与主设备号关联，唯一），可在 /proc/devices 文件中查看
 static const uint baseminor = 0; // 次设备号最小值
 
-#define DEVICE_EXT_COUNT 2
 static struct device_ext dev[DEVICE_EXT_COUNT] = {
     {.class_name = "class1_name" , .device_name = "device1_name"},
     {.class_name = "class2_name" , .device_name = "device2_name"}
@@ -83,19 +84,26 @@ static int chrdev_open(struct inode* inode , struct file* file)
 static ssize_t chrdev_read(struct file* file , char __user* buf , size_t size , loff_t* off)
 {
     struct device_ext* dev = (struct device_ext*)file->private_data;
-    unsigned long irqflags;
+    unsigned long irqflags = 0;
+    int ret = size;
 
 CHRDEV_READ_START:
-    CHRDEV_TEMP_DEBUG("r trylock");
+    CHRDEV_TEMP_DEBUG(dev->dev_num , "r trylock");
     spin_lock_irqsave(&dev->spinlock , irqflags);
     if(! dev->is_free)
     {
         if(dev->reading_count <= 0) // 设备忙碌且无读线程，写在独占
         {
             spin_unlock_irqrestore(&dev->spinlock , irqflags);
-            CHRDEV_TEMP_DEBUG("r wait");
+            if(file->f_flags & O_NONBLOCK)
+            {
+                ret = -EAGAIN; // EWOULDBLOCK
+                CHRDEV_TEMP_DEBUG(dev->dev_num , "r failed:block");
+                goto CHRDEV_READ_END;
+            }
+            CHRDEV_TEMP_DEBUG(dev->dev_num , "r wait");
             // 睡眠中断返回 ERESTARTSYS，暂未处理
-            wait_event_interruptible_timeout(dev->r_waithead , dev->is_free , 5 * HZ);
+            wait_event_interruptible_timeout(dev->r_waithead , dev->is_free , DEVICE_EXT_RW_WAITTIME * HZ);
             goto CHRDEV_READ_START;
         }
         else
@@ -110,12 +118,15 @@ CHRDEV_READ_START:
         dev->reading_count++;
         spin_unlock_irqrestore(&dev->spinlock , irqflags);
     }
-    CHRDEV_TEMP_DEBUG("r...");
+    CHRDEV_TEMP_DEBUG(dev->dev_num , "r...");
 
     /* TODO */
-    copy_to_user(buf , dev->kbuf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
+    int i = 0;
+    for(; i < 5000 ; i++)
+        copy_to_user(buf , dev->kbuf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
     /********/
 
+    CHRDEV_TEMP_DEBUG(dev->dev_num , "r end");
     spin_lock_irqsave(&dev->spinlock , irqflags);
     dev->reading_count--;
     if(dev->reading_count <= 0)
@@ -124,7 +135,7 @@ CHRDEV_READ_START:
         spin_unlock_irqrestore(&dev->spinlock , irqflags);
         if(waitqueue_active(&dev->waithead))
         {
-            CHRDEV_TEMP_DEBUG("wake w");
+            CHRDEV_TEMP_DEBUG(dev->dev_num , "wake w");
             wake_up_interruptible(&dev->waithead);
         }
     }
@@ -132,54 +143,83 @@ CHRDEV_READ_START:
     {
         spin_unlock_irqrestore(&dev->spinlock , irqflags); 
     }
-    CHRDEV_TEMP_DEBUG("r end");
-    return size;
+
+CHRDEV_READ_END:
+    return ret;
 }
 
 static ssize_t chrdev_write(struct file* file , const char __user* buf , size_t size , loff_t* off)
 {
     struct device_ext* dev = (struct device_ext*)file->private_data;
-    unsigned long irqflags;
+    unsigned long irqflags = 0;
+    int ret = size;
 
 CHRDEV_WRITE_START:
-    CHRDEV_TEMP_DEBUG("w trylock");
+    CHRDEV_TEMP_DEBUG(dev->dev_num , "w trylock");
     spin_lock_irqsave(&dev->spinlock , irqflags);
     if(! dev->is_free)
     {
         spin_unlock_irqrestore(&dev->spinlock , irqflags);
-        CHRDEV_TEMP_DEBUG("w wait");
-        wait_event_interruptible_timeout(dev->waithead , dev->is_free , 5 * HZ); // 睡眠中断返回 ERESTARTSYS，暂未处理
+        if(file->f_flags & O_NONBLOCK)
+        {
+            ret = -EAGAIN; // EWOULDBLOCK
+            CHRDEV_TEMP_DEBUG(dev->dev_num , "w failed:block");
+            goto CHRDEV_WRITE_END;
+        }
+        CHRDEV_TEMP_DEBUG(dev->dev_num , "w wait");
+        // 睡眠中断返回 ERESTARTSYS，暂未处理
+        wait_event_interruptible_timeout(dev->waithead , dev->is_free , DEVICE_EXT_RW_WAITTIME * HZ);
         goto CHRDEV_WRITE_START;
     }
     else
     {
         dev->is_free = 0;
         spin_unlock_irqrestore(&dev->spinlock , irqflags);
-        CHRDEV_TEMP_DEBUG("w...");
+        CHRDEV_TEMP_DEBUG(dev->dev_num , "w...");
     }
     
     /* TODO */
-    copy_from_user(dev->kbuf , buf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
+    int i = 0;
+    for(; i < 5000 ; i++)
+        copy_from_user(dev->kbuf , buf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
     /********/
 
+    CHRDEV_TEMP_DEBUG(dev->dev_num , "w end");
     dev->is_free = 1;
     if(waitqueue_active(&dev->r_waithead))
     {
-        CHRDEV_TEMP_DEBUG("wake all r");
+        CHRDEV_TEMP_DEBUG(dev->dev_num , "wake all r");
         wake_up_interruptible_all(&dev->r_waithead);
     }
     else if(waitqueue_active(&dev->waithead))
     {
-        CHRDEV_TEMP_DEBUG("wake other w");
+        CHRDEV_TEMP_DEBUG(dev->dev_num , "wake other w");
         wake_up_interruptible(&dev->waithead);
     }
-    CHRDEV_TEMP_DEBUG("w end");
-    return size;
+
+CHRDEV_WRITE_END:
+    return ret;
 }
 
 static int chrdev_release(struct inode* inode , struct file* file)
 {
     return 0;
+}
+
+static __poll_t chrdev_poll(struct file* file , struct poll_table_struct* p)
+{
+    struct device_ext* dev = (struct device_ext*)file->private_data;
+    __poll_t mask = 0;
+
+    poll_wait(file , &dev->waithead , p);
+    poll_wait(file , &dev->r_waithead , p);
+
+    if(dev->is_free)
+        mask |= (POLLIN | POLLOUT);
+    else if(dev->reading_count > 0)
+        mask |= POLLIN;
+
+    return mask;
 }
 
 static struct file_operations cdev_fops = {
@@ -188,6 +228,7 @@ static struct file_operations cdev_fops = {
     .read = chrdev_read,
     .write = chrdev_write,
     .release = chrdev_release,
+    .poll = chrdev_poll,
 };
 
 static int __init chrdev_init(void) // 驱动入口函数
