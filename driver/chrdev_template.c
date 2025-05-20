@@ -7,6 +7,9 @@
 #include <linux/spinlock.h>
 #include <linux/wait.h>
 #include <linux/poll.h>
+#include <linux/signal.h>
+#include <linux/atomic.h>
+#include <linux/timer.h>
 
 // 驱动模块传参，insmod 命令操作时赋值可覆盖代码中的值，可在 /sys/module/<驱动文件名>/parameters/ 下查看
 /*static int number = 123;
@@ -64,6 +67,8 @@ struct device_ext
     wait_queue_head_t waithead;   // 写-等待队列头
     int reading_count;            // 在读线程数量
     wait_queue_head_t r_waithead; // 读-等待队列头
+
+    struct fasync_struct* async_queue; // 异步通知队列,记录了注册异步通知的文件描述符和进程信息
 };
 
 static char* const chrdev_name = "chrdev_name"; // 设备名（只与主设备号关联，唯一），可在 /proc/devices 文件中查看
@@ -73,6 +78,16 @@ static struct device_ext dev[DEVICE_EXT_COUNT] = {
     {.class_name = "class1_name" , .device_name = "device1_name"},
     {.class_name = "class2_name" , .device_name = "device2_name"}
 };
+
+static atomic_t drvtime = ATOMIC_INIT(0); // 驱动被加载的时长，单位秒
+static void drvtimer_func(struct timer_list* t); // drvtime 对应的定时功能函数
+DEFINE_TIMER(drvtimer , drvtimer_func); // drvtime 对应的定时器
+static void drvtimer_func(struct timer_list* t)
+{
+    atomic_inc(&drvtime);
+    printk("drvtime is %d\n" , atomic_read(&drvtime));
+    mod_timer(&drvtimer , jiffies + msecs_to_jiffies(1000)); // 重置
+}
 
 static int chrdev_open(struct inode* inode , struct file* file)
 {
@@ -141,7 +156,7 @@ CHRDEV_READ_START:
     }
     else
     {
-        spin_unlock_irqrestore(&dev->spinlock , irqflags); 
+        spin_unlock_irqrestore(&dev->spinlock , irqflags);
     }
 
 CHRDEV_READ_END:
@@ -196,14 +211,14 @@ CHRDEV_WRITE_START:
         CHRDEV_TEMP_DEBUG(dev->dev_num , "wake other w");
         wake_up_interruptible(&dev->waithead);
     }
+    else // 优先处理等待队列的读写，然后再处理信号读
+    {
+        // CHRDEV_TEMP_DEBUG(dev->dev_num , "sigio r");
+        // kill_fasync(&dev->async_queue , SIGIO , POLLIN);
+    }
 
 CHRDEV_WRITE_END:
     return ret;
-}
-
-static int chrdev_release(struct inode* inode , struct file* file)
-{
-    return 0;
 }
 
 static __poll_t chrdev_poll(struct file* file , struct poll_table_struct* p)
@@ -222,13 +237,27 @@ static __poll_t chrdev_poll(struct file* file , struct poll_table_struct* p)
     return mask;
 }
 
+static int chrdev_fasync(int fd , struct file* file , int on)
+{
+    struct device_ext* dev = (struct device_ext*)file->private_data;
+    return fasync_helper(fd , file , on , &dev->async_queue);
+}
+
+static int chrdev_release(struct inode* inode , struct file* file)
+{
+    chrdev_fasync(-1 , file , 0);
+
+    return 0;
+}
+
 static struct file_operations cdev_fops = {
     .owner = THIS_MODULE, // 将 owner 字段指向本模块，避免模块中的相关操作正在被使用时卸载该模块
     .open = chrdev_open,
     .read = chrdev_read,
     .write = chrdev_write,
-    .release = chrdev_release,
     .poll = chrdev_poll,
+    .fasync = chrdev_fasync,
+    .release = chrdev_release,
 };
 
 static int __init chrdev_init(void) // 驱动入口函数
@@ -291,6 +320,7 @@ static int __init chrdev_init(void) // 驱动入口函数
     }
 
     printk(KERN_INFO "chrdev_template init ok.\n");
+    add_timer(&drvtimer);
     return 0;
 
 CHRDEV_INIT_FAILED:
@@ -316,6 +346,7 @@ CHRDEV_INIT_ALLOC_DEV_NUM_FAILED:
 
 static void __exit chrdev_exit(void) // 驱动出口函数
 {
+    del_timer(&drvtimer);
     int i = 0;
     for(i = 0 ; i < DEVICE_EXT_COUNT ; i++)
     {
