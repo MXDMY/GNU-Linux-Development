@@ -34,7 +34,7 @@ EXPORT_SYMBOL(add);*/
 #if 1
 #define CHRDEV_TEMP_DEBUG(dev_num , str) printk(KERN_DEBUG "P%d:N%u:%s\n" , current->pid , dev_num , str)
 #else
-#define CHRDEV_TEMP_DEBUG(str) 
+#define CHRDEV_TEMP_DEBUG(dev_num , str)
 #endif
 
 #define DEVICE_EXT_RW_WAITTIME 5 // 设备读写等待队列的超时时长，单位秒
@@ -81,12 +81,11 @@ static struct device_ext dev[DEVICE_EXT_COUNT] = {
 
 static atomic_t drvtime = ATOMIC_INIT(0); // 驱动被加载的时长，单位秒
 static void drvtimer_func(struct timer_list* t); // drvtime 对应的定时功能函数
-DEFINE_TIMER(drvtimer , drvtimer_func); // drvtime 对应的定时器
+DEFINE_TIMER(drv_timer , drvtimer_func); // drvtime 对应的定时器
 static void drvtimer_func(struct timer_list* t)
 {
     atomic_inc(&drvtime);
-    printk("drvtime is %d\n" , atomic_read(&drvtime));
-    mod_timer(&drvtimer , jiffies + msecs_to_jiffies(1000)); // 重置
+    mod_timer(&drv_timer , jiffies + msecs_to_jiffies(1000)); // 重置
 }
 
 static int chrdev_open(struct inode* inode , struct file* file)
@@ -100,7 +99,7 @@ static ssize_t chrdev_read(struct file* file , char __user* buf , size_t size , 
 {
     struct device_ext* dev = (struct device_ext*)file->private_data;
     unsigned long irqflags = 0;
-    int ret = size;
+    ssize_t ret = -1;
 
 CHRDEV_READ_START:
     CHRDEV_TEMP_DEBUG(dev->dev_num , "r trylock");
@@ -135,10 +134,20 @@ CHRDEV_READ_START:
     }
     CHRDEV_TEMP_DEBUG(dev->dev_num , "r...");
 
-    /* TODO */
-    int i = 0;
-    for(; i < 5000 ; i++)
-        copy_to_user(buf , dev->kbuf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
+    /* Read */
+    if(DEVICE_EXT_KBUF_SIZE == *off)
+    {
+        ret = 0;
+    }
+    else
+    {
+        if(size > DEVICE_EXT_KBUF_SIZE - *off)
+            ret = DEVICE_EXT_KBUF_SIZE - *off;
+        else
+            ret = size;
+        ret -= copy_to_user(buf , dev->kbuf + *off , ret); // 拷贝可能失败，获取成功拷贝的字节数
+        *off += ret;
+    }
     /********/
 
     CHRDEV_TEMP_DEBUG(dev->dev_num , "r end");
@@ -167,7 +176,7 @@ static ssize_t chrdev_write(struct file* file , const char __user* buf , size_t 
 {
     struct device_ext* dev = (struct device_ext*)file->private_data;
     unsigned long irqflags = 0;
-    int ret = size;
+    ssize_t ret = -1;
 
 CHRDEV_WRITE_START:
     CHRDEV_TEMP_DEBUG(dev->dev_num , "w trylock");
@@ -193,10 +202,20 @@ CHRDEV_WRITE_START:
         CHRDEV_TEMP_DEBUG(dev->dev_num , "w...");
     }
     
-    /* TODO */
-    int i = 0;
-    for(; i < 5000 ; i++)
-        copy_from_user(dev->kbuf , buf , size > DEVICE_EXT_KBUF_SIZE ? DEVICE_EXT_KBUF_SIZE : size);
+    /* Write */
+    if(DEVICE_EXT_KBUF_SIZE == *off)
+    {
+        ret = 0;
+    }
+    else
+    {
+        if(size > DEVICE_EXT_KBUF_SIZE - *off)
+            ret = DEVICE_EXT_KBUF_SIZE - *off;
+        else
+            ret = size;
+        ret -= copy_from_user(dev->kbuf + *off , buf , ret); // 拷贝可能失败，获取成功拷贝的字节数
+        *off += ret;
+    }
     /********/
 
     CHRDEV_TEMP_DEBUG(dev->dev_num , "w end");
@@ -243,6 +262,38 @@ static int chrdev_fasync(int fd , struct file* file , int on)
     return fasync_helper(fd , file , on , &dev->async_queue);
 }
 
+static loff_t chrdev_llseek(struct file* file , loff_t offset , int whence)
+{
+    loff_t new_offset = file->f_pos;
+
+    switch(whence)
+    {
+    case SEEK_SET:
+        if(offset < 0 || offset > DEVICE_EXT_KBUF_SIZE)
+            return -EINVAL;
+        new_offset = offset;
+        break;
+
+    case SEEK_CUR:
+        if(file->f_pos + offset > DEVICE_EXT_KBUF_SIZE || file->f_pos + offset < 0)
+            return -EINVAL;
+        new_offset = file->f_pos + offset;
+        break;
+
+    case SEEK_END:
+        if(offset > 0 || offset < -DEVICE_EXT_KBUF_SIZE)
+            return -EINVAL;
+        new_offset = DEVICE_EXT_KBUF_SIZE + offset;
+        break;
+
+    default:
+        break;
+    }
+
+    file->f_pos = new_offset;
+    return new_offset;
+}
+
 static int chrdev_release(struct inode* inode , struct file* file)
 {
     chrdev_fasync(-1 , file , 0);
@@ -257,6 +308,7 @@ static struct file_operations cdev_fops = {
     .write = chrdev_write,
     .poll = chrdev_poll,
     .fasync = chrdev_fasync,
+    .llseek = chrdev_llseek,
     .release = chrdev_release,
 };
 
@@ -320,7 +372,7 @@ static int __init chrdev_init(void) // 驱动入口函数
     }
 
     printk(KERN_INFO "chrdev_template init ok.\n");
-    add_timer(&drvtimer);
+    add_timer(&drv_timer);
     return 0;
 
 CHRDEV_INIT_FAILED:
@@ -346,7 +398,7 @@ CHRDEV_INIT_ALLOC_DEV_NUM_FAILED:
 
 static void __exit chrdev_exit(void) // 驱动出口函数
 {
-    del_timer(&drvtimer);
+    del_timer(&drv_timer);
     int i = 0;
     for(i = 0 ; i < DEVICE_EXT_COUNT ; i++)
     {
