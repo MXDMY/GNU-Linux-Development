@@ -1,3 +1,4 @@
+#!/bin/bash
 as -32 -g -o start.o start.s
 ld -m elf_i386 -o start start.o
 ./start r.txt w.txt 

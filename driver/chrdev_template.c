@@ -135,7 +135,11 @@ CHRDEV_READ_START:
     CHRDEV_TEMP_DEBUG(dev->dev_num , "r...");
 
     /* Read */
-    if(DEVICE_EXT_KBUF_SIZE == *off)
+    if(!access_ok(buf , size))
+    {
+        ret = -EFAULT;
+    }
+    else if(DEVICE_EXT_KBUF_SIZE == *off)
     {
         ret = 0;
     }
@@ -203,7 +207,11 @@ CHRDEV_WRITE_START:
     }
     
     /* Write */
-    if(DEVICE_EXT_KBUF_SIZE == *off)
+    if(!access_ok(buf , size))
+    {
+        ret = -EFAULT;
+    }
+    else if(DEVICE_EXT_KBUF_SIZE == *off)
     {
         ret = 0;
     }
@@ -294,6 +302,19 @@ static loff_t chrdev_llseek(struct file* file , loff_t offset , int whence)
     return new_offset;
 }
 
+static long chrdev_ioctl(struct file* file , unsigned int cmd , unsigned long arg)
+{
+    switch(cmd)
+    {
+    // TODO
+
+    default:
+        return -ENOTTY;
+    }
+
+    return 0;
+}
+
 static int chrdev_release(struct inode* inode , struct file* file)
 {
     chrdev_fasync(-1 , file , 0);
@@ -309,6 +330,7 @@ static struct file_operations cdev_fops = {
     .poll = chrdev_poll,
     .fasync = chrdev_fasync,
     .llseek = chrdev_llseek,
+    .unlocked_ioctl = chrdev_ioctl,
     .release = chrdev_release,
 };
 
