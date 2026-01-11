@@ -1,12 +1,12 @@
 #include "common.h"
 
-void async_signal_safety(void);
+void async_signal_unsafety(void);
 
 int main(int argc, char* argv[])
 {
     printf("hello GNU/Linux test\n");
 
-    async_signal_safety();
+    async_signal_unsafety();
 
     return 0;
 }

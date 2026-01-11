@@ -7,11 +7,13 @@ else
     mkdir ./build
 fi
 
-printf "execution options: %s\n" "$1"
+printf "Execution options: %s\n" "$1"
 case "$1" in
     "driver")
+        printf "No executable projects available\n"
         ;;
     "kernel")
+        printf "No executable projects available\n"
         ;;
     "test")
         cd ./build || exit 36
@@ -20,10 +22,15 @@ case "$1" in
         make -j"${nproc}"
         ;;
     "x86asm_att")
+        cd ./x86asm_att || exit 36
+        as -32 -g -o start.o start.s
+        ld -m elf_i386 -o start start.o
+        mv ./start ../build
+        rm -f start.o
+        printf "Built target start\n"
         ;;
     *)
-        printf "none exec\n"
+        printf "Usages: ./build.sh [driver|kernel|test|x86asm_att]\n"
         ;;
 esac
-
-printf "exec end\n"
+printf "Execution end\n"
