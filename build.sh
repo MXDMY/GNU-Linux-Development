@@ -21,6 +21,11 @@ case "$1" in
         # shellcheck disable=SC2154
         make -j"${nproc}"
         ;;
+    "tools")
+        cd ./tools || exit 36
+        make -j"${nproc}"
+        make clean
+        ;;
     "x86asm_att")
         cd ./x86asm_att || exit 36
         as -32 -g -o start.o start.s
@@ -30,7 +35,7 @@ case "$1" in
         printf "Built target start\n"
         ;;
     *)
-        printf "Usages: ./build.sh [driver|kernel|test|x86asm_att]\n"
+        printf "Usages: ./build.sh [driver|kernel|test|tools|x86asm_att]\n"
         ;;
 esac
 printf "Execution end\n"

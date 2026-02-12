@@ -4,7 +4,7 @@ void async_signal_unsafety(void);
 
 int main(int argc, char* argv[])
 {
-    printf("hello GNU/Linux test\n");
+    printf("Hello GNU/Linux test\n");
 
     async_signal_unsafety();
 
