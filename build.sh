@@ -16,18 +16,18 @@ case "$1" in
         printf "No executable projects available\n"
         ;;
     "test")
-        cd ./build || exit 36
+        cd ./build || exit 1
         cmake ../test/
         # shellcheck disable=SC2154
         make -j"${nproc}"
         ;;
     "tools")
-        cd ./tools || exit 36
+        cd ./tools || exit 1
         make -j"${nproc}"
         make clean
         ;;
     "x86asm_att")
-        cd ./x86asm_att || exit 36
+        cd ./x86asm_att || exit 1
         as -32 -g -o start.o start.s
         ld -m elf_i386 -o start start.o
         mv ./start ../build
