@@ -15,9 +15,9 @@ case "$1" in
     "kernel")
         printf "No executable projects available\n"
         ;;
-    "test")
+    "unsafety")
         cd ./build || exit 1
-        cmake ../test/
+        cmake ../unsafety/
         # shellcheck disable=SC2154
         make -j"${nproc}"
         ;;
@@ -26,8 +26,8 @@ case "$1" in
         make -j"${nproc}"
         make clean
         ;;
-    "x86asm_att")
-        cd ./x86asm_att || exit 1
+    "asm")
+        cd ./asm || exit 1
         as -32 -g -o start.o start.s
         ld -m elf_i386 -o start start.o
         mv ./start ../build
@@ -35,7 +35,7 @@ case "$1" in
         printf "Built target start\n"
         ;;
     *)
-        printf "Usages: ./build.sh [driver|kernel|test|tools|x86asm_att]\n"
+        printf "Usages: ./build.sh [driver|kernel|unsafety|tools|asm]\n"
         ;;
 esac
 printf "Execution end\n"

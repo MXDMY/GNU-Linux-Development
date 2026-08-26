@@ -273,7 +273,7 @@ static void tpl_producer(void)
             continue;
         uint32_t size = (i1 <= i2 ? TPL_BUF_SIZE - i2 : free_size) - 1;
         int rsize = tpl_read(tpl_buf + i2, size ? size : 1);
-        if (rsize <= 0)
+        if (rsize < 0)
             tpl_pr("{%s}read failed, rsize: %d\n", __func__, rsize);
         else
             tpl_atomic_add(tpl_i2, rsize);
