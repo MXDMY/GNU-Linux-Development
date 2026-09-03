@@ -15,6 +15,12 @@ case "$1" in
     "kernel")
         printf "No executable projects available\n"
         ;;
+    "modules")
+        cd ./build || exit 1
+        cmake ../modules/
+        # shellcheck disable=SC2154
+        make -j"${nproc}"
+        ;;
     "unsafety")
         cd ./build || exit 1
         cmake ../unsafety/
@@ -35,7 +41,7 @@ case "$1" in
         printf "Built target start\n"
         ;;
     *)
-        printf "Usages: ./build.sh [driver|kernel|unsafety|tools|asm]\n"
+        printf "Usages: ./build.sh [driver|kernel|modules|unsafety|tools|asm]\n"
         ;;
 esac
 printf "Execution end\n"
