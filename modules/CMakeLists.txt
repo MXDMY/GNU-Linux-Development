@@ -42,6 +42,28 @@ set(MBEDTLS_INCS
     "${MBEDTLS_DIR}/tf-psa-crypto/drivers/builtin/src"
 )
 
+# Opus 1.3.1：浮点构建；定点时改 silk/fixed 并去掉 analysis/mlp
+set(OPUS_DIR "${THIRD_PARTY_DIR}/opus-1.3.1")
+file(GLOB OPUS_SRCS
+    "${OPUS_DIR}/celt/*.c"
+    "${OPUS_DIR}/silk/*.c"
+    "${OPUS_DIR}/silk/float/*.c"
+    "${OPUS_DIR}/src/*.c"
+)
+set(OPUS_INCS
+    "${OPUS_DIR}/include"
+    "${OPUS_DIR}/celt"
+    "${OPUS_DIR}/silk"
+    "${OPUS_DIR}/silk/float"
+    "${OPUS_DIR}/src"
+)
+set(OPUS_DEFS
+    OPUS_BUILD
+    VAR_ARRAYS
+    HAVE_LRINT
+    HAVE_LRINTF
+)
+
 # 只收集 modules/ 与 modules/third_party/ 下的 *_test.c，不进入开源库目录
 file(GLOB MODULE_TEST_SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/*_test.c"
@@ -60,6 +82,12 @@ foreach(TEST_SRC ${MODULE_TEST_SRCS})
         add_executable(${TEST_NAME} ${TEST_SRC} ${MBEDTLS_SRCS})
         target_include_directories(${TEST_NAME} PRIVATE ${MBEDTLS_INCS})
         target_compile_options(${TEST_NAME} PRIVATE -std=gnu11)
+    elseif(TEST_NAME STREQUAL "opus_test")
+        add_executable(${TEST_NAME} ${TEST_SRC} ${OPUS_SRCS})
+        target_include_directories(${TEST_NAME} PRIVATE ${OPUS_INCS})
+        target_compile_definitions(${TEST_NAME} PRIVATE ${OPUS_DEFS})
+        target_compile_options(${TEST_NAME} PRIVATE -std=c99)
+        target_link_libraries(${TEST_NAME} m)
     else()
         message(FATAL_ERROR "No library mapping for ${TEST_SRC}")
     endif()
