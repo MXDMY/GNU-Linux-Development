@@ -9,7 +9,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -Og -Wall -Wextra")
 
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 
-# cJSON 1.7.19：头文件与实现均在库根目录
+# cJSON 1.7.19
 set(CJSON_DIR "${THIRD_PARTY_DIR}/cJSON-1.7.19")
 set(CJSON_SRCS
     "${CJSON_DIR}/cJSON.c"
@@ -64,6 +64,15 @@ set(OPUS_DEFS
     HAVE_LRINTF
 )
 
+# mhttp
+set(MHTTP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mhttp")
+file(GLOB MHTTP_SRCS
+    "${MHTTP_DIR}/*.c"
+)
+set(MHTTP_INCS
+    "${MHTTP_DIR}"
+)
+
 # 只收集 modules/ 与 modules/third_party/ 下的 *_test.c，不进入开源库目录
 file(GLOB MODULE_TEST_SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/*_test.c"
@@ -88,6 +97,10 @@ foreach(TEST_SRC ${MODULE_TEST_SRCS})
         target_compile_definitions(${TEST_NAME} PRIVATE ${OPUS_DEFS})
         target_compile_options(${TEST_NAME} PRIVATE -std=c99)
         target_link_libraries(${TEST_NAME} m)
+    elseif(TEST_NAME STREQUAL "mhttp_test")
+        add_executable(${TEST_NAME} ${TEST_SRC} ${MHTTP_SRCS} ${MBEDTLS_SRCS})
+        target_include_directories(${TEST_NAME} PRIVATE ${MHTTP_INCS} ${MBEDTLS_INCS})
+        target_compile_options(${TEST_NAME} PRIVATE -std=c99)
     else()
         message(FATAL_ERROR "No library mapping for ${TEST_SRC}")
     endif()
