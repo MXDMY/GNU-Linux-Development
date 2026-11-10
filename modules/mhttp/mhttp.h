@@ -1,6 +1,16 @@
 /*
  * http 1.1 客户端实现
+ *
+ * 传输与内存等底部接口优先使用 mbedtls 实现：
+ *   mbedtls_calloc / mbedtls_free
+ *   mbedtls_net_init / connect / send / recv_timeout / free
+ * 其次使用 m.h 实现，最后使用 C 标准库实现。
+ *
+ * 未开启 MBEDTLS_NET_C 时，库不提供 mbedtls_net_* 的实现，由用户按
+ * mbedtls/net_sockets.h 中的原型自行实现（签名不变）。
+ * 替换堆分配请使用 mbedtls_platform_set_calloc_free()（需 MBEDTLS_PLATFORM_MEMORY）。
 */
+
 #ifndef MHTTP_H
 #define MHTTP_H
 
@@ -9,6 +19,8 @@ extern "C" {
 #endif
 
 #include "mbedtls/net_sockets.h"
+
+#include "m.h"
 
 #define MHTTP_MAX_REQ_SIZE 1024
 
@@ -20,7 +32,7 @@ typedef struct mhttp_response
     char* body;
 }mhttp_rsp;
 
-/* 完整 URL (scheme://user:password@host:port/path?query#fragment) + 请求头 + 请求体*/
+/* 完整 URL (scheme://user:password@host:port/path?query#fragment) + 请求头 + 请求体 */
 typedef struct mhttp_request
 {
     char* url_scheme;   // http 或 https
@@ -28,8 +40,9 @@ typedef struct mhttp_request
     char* url_password; // 无则置 NULL
     char* url_host;
     uint16_t url_port;  // 若置 0（RFC 6335 规定它不应被分配），则使用默认端口
-    char* url_path;
+    char* url_path;     // path?query#fragment
 
+    char* method;       // GET、HEAD、POST 等
     char* head;         // 除 Host 字段外的其余头部字段。无则置 NULL
     char* body;         // 无则置 NULL
 }mhttp_req;
@@ -37,11 +50,10 @@ typedef struct mhttp_request
 typedef struct mhttp_handle
 {
     mbedtls_net_context context;
-    uint8_t is_connected;
 }mhttp_hdl;
 
-// 初始化一个连接句柄
 extern void mhttp_hdl_init(mhttp_hdl* hdl);
+extern void mhttp_hdl_free(mhttp_hdl* hdl);
 
 /*
  * 发送 http 请求

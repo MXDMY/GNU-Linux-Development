@@ -64,6 +64,15 @@ set(OPUS_DEFS
     HAVE_LRINTF
 )
 
+# m
+set(M_DIR "${CMAKE_CURRENT_SOURCE_DIR}/m")
+file(GLOB M_SRCS
+    "${M_DIR}/*.c"
+)
+set(M_INCS
+    "${M_DIR}"
+)
+
 # mhttp
 set(MHTTP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mhttp")
 file(GLOB MHTTP_SRCS
@@ -98,8 +107,8 @@ foreach(TEST_SRC ${MODULE_TEST_SRCS})
         target_compile_options(${TEST_NAME} PRIVATE -std=c99)
         target_link_libraries(${TEST_NAME} m)
     elseif(TEST_NAME STREQUAL "mhttp_test")
-        add_executable(${TEST_NAME} ${TEST_SRC} ${MHTTP_SRCS} ${MBEDTLS_SRCS})
-        target_include_directories(${TEST_NAME} PRIVATE ${MHTTP_INCS} ${MBEDTLS_INCS})
+        add_executable(${TEST_NAME} ${TEST_SRC} ${M_SRCS} ${MHTTP_SRCS} ${MBEDTLS_SRCS})
+        target_include_directories(${TEST_NAME} PRIVATE ${M_INCS} ${MHTTP_INCS} ${MBEDTLS_INCS})
         target_compile_options(${TEST_NAME} PRIVATE -std=c99)
     else()
         message(FATAL_ERROR "No library mapping for ${TEST_SRC}")
